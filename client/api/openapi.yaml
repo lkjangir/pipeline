@@ -1892,6 +1892,129 @@ paths:
       summary: Update deployment
       tags:
       - deployment
+  /api/v1/orgs/{orgId}/clusters/{id}/deployments/{name}/autoscaling:
+    get:
+      description: Get scaling info for a Helm deployment
+      operationId: DeploymentAutoscalingGet
+      parameters:
+      - description: Organization identification
+        explode: false
+        in: path
+        name: orgId
+        required: true
+        schema:
+          format: int32
+          type: integer
+        style: simple
+      - description: Selected cluster identification (number)
+        explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          format: int32
+          type: integer
+        style: simple
+      - description: Deployment name
+        explode: false
+        in: path
+        name: name
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        200:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentScalingResponse'
+          description: Deployment autoscaling info
+        400:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BaseError_400'
+          description: Bad request
+        401:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Unauthorized'
+          description: Unauthorized
+        500:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BaseError_500'
+          description: Internal server error
+      security:
+      - bearerAuth: []
+      summary: Get Deployment Scaling Info
+      tags:
+      - deployment
+    put:
+      description: Create / update scaling info for a Helm deployment
+      operationId: DeploymentAutoscalingPut
+      parameters:
+      - description: Organization identification
+        explode: false
+        in: path
+        name: orgId
+        required: true
+        schema:
+          format: int32
+          type: integer
+        style: simple
+      - description: Selected cluster identification (number)
+        explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          format: int32
+          type: integer
+        style: simple
+      - description: Deployment name
+        explode: false
+        in: path
+        name: name
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeploymentScalingRequest'
+        required: true
+      responses:
+        201:
+          description: Deployment autoscaling updated successfully
+        401:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Unauthorized'
+          description: Unauthorized
+        400:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BaseError_400'
+          description: Error during creating deployment
+        404:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClusterNotFound'
+          description: Cluster not found
+      security:
+      - bearerAuth: []
+      summary: Create / Update Deployment Scaling
+      tags:
+      - deployment
   /api/v1/orgs/{orgId}/profiles/cluster/{distribution}:
     get:
       description: Listing cluster profiles by cloud type
@@ -6379,6 +6502,123 @@ components:
           example: NewResourceGroupName
           type: string
       type: object
+    DeploymentScalingRequest:
+      example:
+        deployments:
+        - name: k8sDeploymentName
+          minReplicas: 1
+          maxReplicas: 3
+          cpu:
+            targetAverageUtilization: 70
+          memory:
+            targetAverageValue: 500Mi
+          customMetrics:
+          - name: custom_metric_name
+            type: pod
+            targetAverageValue: 700m
+      properties:
+        deployments:
+          items:
+            $ref: '#/components/schemas/DeploymentScalingRequest_deployments'
+          type: array
+      required:
+      - deployments
+      title: Create / Update Deployment Scaling Request
+      type: object
+    ResourceMetric:
+      properties:
+        targetAverageUtilization:
+          example: 70
+          format: int32
+          type: integer
+        targetAverageValue:
+          example: 700m
+          type: string
+      title: ResourceMetric
+      type: object
+    CustomMetric:
+      properties:
+        name:
+          example: custom_metric_name
+          type: string
+        type:
+          example: pod
+          type: string
+        targetAverageValue:
+          example: 700m
+          type: string
+      required:
+      - name
+      - targetValue
+      - type
+      title: CustomMetric
+      type: object
+    DeploymentScalingResponse:
+      example:
+        deployments:
+        - name: k8sDeploymentName
+          minReplicas: 1
+          maxReplicas: 3
+          cpu:
+            targetAverageValue: 700m
+            currentAverageValue: 100m
+          memory:
+            targetAverageUtilization: 90
+            currentAverageUtilization: 30
+          customMetrics:
+          - name: custom_metric_name
+            type: pod
+            targetAverageValue: 700m
+            currentAverageValue: 300m
+          status:
+            currentReplicas: 1
+            desiredReplicas: 1
+            message: 'ScalingActive = true, lastTransitionTime: 2018-00-22T15:31:16Z,
+              the HPA was able to succesfully calculate a replica count from memory
+              resource'
+      properties:
+        deployments:
+          items:
+            $ref: '#/components/schemas/DeploymentScalingResponse_deployments'
+          type: array
+      title: Get Deployment Scaling Response
+      type: object
+    ResourceMetricStatus:
+      properties:
+        allOf:
+          $ref: '#/components/schemas/ResourceMetric'
+        currentAverageUtilization:
+          example: 10
+          format: int32
+          type: integer
+        currentAverageValue:
+          example: 100m
+          type: string
+      type: object
+    CustomMetricStatus:
+      properties:
+        allOf:
+          $ref: '#/components/schemas/CustomMetric'
+        currentAverageValue:
+          example: 300m
+          type: string
+      type: object
+    DeploymentScaleStatus:
+      properties:
+        currentReplicas:
+          example: 1
+          format: int32
+          type: integer
+        desiredReplicas:
+          example: 1
+          format: int32
+          type: integer
+        message:
+          example: 'ScalingActive = true, lastTransitionTime: 2018-08-22T15:31:16Z,
+            the HPA was able to succesfully calculate a replica count from memory
+            resource'
+          type: string
+      type: object
     body:
       properties:
         name:
@@ -7622,6 +7862,61 @@ components:
           type: string
         tls:
           $ref: '#/components/schemas/GenTLSForLogging'
+      type: object
+    DeploymentScalingRequest_deployments:
+      properties:
+        name:
+          example: k8sDeploymentName
+          type: string
+        minReplicas:
+          example: 1
+          format: int32
+          type: integer
+        maxReplicas:
+          example: 3
+          format: int32
+          type: integer
+        cpu:
+          $ref: '#/components/schemas/ResourceMetric'
+        memory:
+          $ref: '#/components/schemas/ResourceMetric'
+        customMetrics:
+          example:
+          - name: custom_metric_name
+            type: pod
+            targetAverageValue: 700m
+          items:
+            $ref: '#/components/schemas/CustomMetric'
+          type: array
+      type: object
+    DeploymentScalingResponse_deployments:
+      properties:
+        name:
+          example: k8sDeploymentName
+          type: string
+        minReplicas:
+          example: 1
+          format: int32
+          type: integer
+        maxReplicas:
+          example: 3
+          format: int32
+          type: integer
+        cpu:
+          $ref: '#/components/schemas/ResourceMetricStatus'
+        memory:
+          $ref: '#/components/schemas/ResourceMetricStatus'
+        customMetrics:
+          example:
+          - name: custom_metric_name
+            type: pod
+            targetAverageValue: 700m
+            currentAverageValue: 300m
+          items:
+            $ref: '#/components/schemas/CustomMetricStatus'
+          type: array
+        status:
+          $ref: '#/components/schemas/DeploymentScaleStatus'
       type: object
   securitySchemes:
     bearerAuth:
