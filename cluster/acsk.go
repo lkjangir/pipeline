@@ -25,6 +25,7 @@ import (
 	"github.com/banzaicloud/pipeline/secret/verify"
 	"github.com/jmespath/go-jmespath"
 	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -108,6 +109,7 @@ type ACSKCluster struct {
 	alibabaCluster *alibabaDescribeClusterResponse
 	modelCluster   *model.ClusterModel
 	APIEndpoint    string
+	log            logrus.FieldLogger
 	CommonClusterBase
 }
 
@@ -130,7 +132,7 @@ func (c *ACSKCluster) GetAlibabaCSClient(cfg *sdk.Config) (*cs.Client, error) {
 		return nil, err
 	}
 
-	return verify.CreateAlibabaCSClient(cred, c.modelCluster.ACSK.RegionID, cfg)
+	return createAlibabaCSClient(cred, c.modelCluster.ACSK.RegionID, cfg)
 }
 
 // GetAlibabaECSClient creates an Alibaba Elastic Compute Service client with the credentials
@@ -140,10 +142,10 @@ func (c *ACSKCluster) GetAlibabaECSClient(cfg *sdk.Config) (*ecs.Client, error) 
 		return nil, err
 	}
 
-	return verify.CreateAlibabaECSClient(cred, c.modelCluster.ACSK.RegionID, cfg)
+	return createAlibabaECSClient(cred, c.modelCluster.ACSK.RegionID, cfg)
 }
 
-func createACSKNodePoolsModelFromRequestData(pools acsk.NodePools, userId uint) ([]*model.ACSKNodePoolModel, error) {
+func createACSKNodePoolsFromRequest(pools acsk.NodePools, userId uint) ([]*model.ACSKNodePoolModel, error) {
 	nodePoolsCount := len(pools)
 	if nodePoolsCount == 0 {
 		return nil, pkgErrors.ErrorNodePoolNotProvided
@@ -172,15 +174,18 @@ func CreateACSKClusterFromModel(clusterModel *model.ClusterModel) (*ACSKCluster,
 	log.Debug("Create ClusterModel struct from the model")
 	alibabaCluster := ACSKCluster{
 		modelCluster: clusterModel,
+		log:          log.WithField("cluster", clusterModel.Name),
 	}
 	return &alibabaCluster, nil
 }
 
 func CreateACSKClusterFromRequest(request *pkgCluster.CreateClusterRequest, orgId, userId uint) (*ACSKCluster, error) {
 	log.Debug("Create ClusterModel struct from the request")
-	var cluster ACSKCluster
+	cluster := ACSKCluster{
+		log: log.WithField("cluster", request.Name),
+	}
 
-	nodePools, err := createACSKNodePoolsModelFromRequestData(request.Properties.CreateClusterACSK.NodePools, userId)
+	nodePools, err := createACSKNodePoolsFromRequest(request.Properties.CreateClusterACSK.NodePools, userId)
 	if err != nil {
 		return nil, err
 	}
@@ -198,7 +203,6 @@ func CreateACSKClusterFromRequest(request *pkgCluster.CreateClusterRequest, orgI
 			MasterInstanceType:       request.Properties.CreateClusterACSK.MasterInstanceType,
 			MasterSystemDiskCategory: request.Properties.CreateClusterACSK.MasterSystemDiskCategory,
 			MasterSystemDiskSize:     request.Properties.CreateClusterACSK.MasterSystemDiskSize,
-			LoginPassword:            "",
 			SNATEntry:                true,
 			SSHFlags:                 true,
 			NodePools:                nodePools,
@@ -207,16 +211,10 @@ func CreateACSKClusterFromRequest(request *pkgCluster.CreateClusterRequest, orgI
 	}
 	return &cluster, nil
 }
-
 func (c *ACSKCluster) CreateCluster() error {
 	log.Info("Start create cluster (Alibaba)")
 
-	// TODO: create method for this
-	cfg := sdk.NewConfig()
-	cfg.AutoRetry = false
-	cfg.Debug = true
-	cfg.Timeout = time.Minute
-	client, err := c.GetAlibabaCSClient(cfg)
+	client, err := c.GetAlibabaCSClient(nil)
 	if err != nil {
 		return err
 	}
@@ -227,7 +225,7 @@ func (c *ACSKCluster) CreateCluster() error {
 	}
 
 	sshKey := secret.NewSSHKeyPair(clusterSshSecret)
-	err = c.uploadSSHKeyForCluster(sshKey)
+	keyName, err := c.uploadSSHKeyForCluster(sshKey)
 	if err != nil {
 		return err
 	}
@@ -244,7 +242,7 @@ func (c *ACSKCluster) CreateCluster() error {
 		WorkerInstanceType:       c.modelCluster.ACSK.NodePools[0].InstanceType,       // "ecs.sn1.large",
 		WorkerSystemDiskCategory: c.modelCluster.ACSK.NodePools[0].SystemDiskCategory, // "cloud_efficiency",
 		WorkerSystemDiskSize:     c.modelCluster.ACSK.NodePools[0].SystemDiskSize,     // 40,
-		KeyPair:                  c.modelCluster.Name,                                 // uploaded keyPair name
+		KeyPair:                  keyName,                                             // uploaded keyPair name
 		ImageID:                  c.modelCluster.ACSK.NodePools[0].Image,              // "centos_7",
 		NumOfNodes:               c.modelCluster.ACSK.NodePools[0].Count,              // 1,
 		SNATEntry:                c.modelCluster.ACSK.SNATEntry,                       // true,
@@ -254,6 +252,11 @@ func (c *ACSKCluster) CreateCluster() error {
 	if err != nil {
 		return err
 	}
+	//creationContext := action.NewACSKClusterCreationContext(
+	//	c.modelCluster.Name,
+	//	keyName,
+	//	client,
+	//)
 
 	req := cs.CreateCreateClusterRequest()
 	setEndpoint(req)
@@ -290,16 +293,10 @@ func (c *ACSKCluster) CreateCluster() error {
 	return c.modelCluster.Save()
 }
 
-func (c *ACSKCluster) uploadSSHKeyForCluster(key *secret.SSHKeyPair) error {
-	//Get the Alibaba ECSClient
-	cfg := sdk.NewConfig()
-	cfg.AutoRetry = false
-	cfg.Debug = true
-	cfg.Timeout = time.Minute
-
-	ecsClient, err := c.GetAlibabaECSClient(cfg)
+func (c *ACSKCluster) uploadSSHKeyForCluster(key *secret.SSHKeyPair) (name string, err error) {
+	ecsClient, err := c.GetAlibabaECSClient(nil)
 	if err != nil {
-		return err
+		return "", errors.Wrap(err, "could not upload ssh key")
 	}
 	//CreateImportKeyPairRequest request for Alibaba
 	req := ecs.CreateImportKeyPairRequest()
@@ -309,11 +306,11 @@ func (c *ACSKCluster) uploadSSHKeyForCluster(key *secret.SSHKeyPair) error {
 	req.PublicKeyBody = strings.TrimSpace(key.PublicKeyData)
 	req.RegionId = c.modelCluster.ACSK.RegionID
 
-	_, err = ecsClient.ImportKeyPair(req)
+	resp, err := ecsClient.ImportKeyPair(req)
 	if err != nil {
-		return err
+		return "", errors.Wrap(err, "could not upload ssh key")
 	}
-	return nil
+	return resp.KeyPairName, nil
 }
 
 type setSchemeSetDomainer interface {
@@ -570,7 +567,7 @@ func (c *ACSKCluster) UpdateCluster(request *pkgCluster.UpdateClusterRequest, us
 	req := cs.CreateScaleClusterRequest()
 	req.ClusterId = c.modelCluster.ACSK.ClusterID
 
-	nodePoolModels, err := createACSKNodePoolsModelFromRequestData(request.ACSK.NodePools, userId)
+	nodePoolModels, err := createACSKNodePoolsFromRequest(request.ACSK.NodePools, userId)
 	if err != nil {
 		return err
 	}
@@ -580,7 +577,6 @@ func (c *ACSKCluster) UpdateCluster(request *pkgCluster.UpdateClusterRequest, us
 		WorkerInstanceType:       nodePoolModels[0].InstanceType,
 		WorkerSystemDiskCategory: nodePoolModels[0].SystemDiskCategory,
 		WorkerSystemDiskSize:     nodePoolModels[0].SystemDiskSize,
-		LoginPassword:            c.modelCluster.ACSK.LoginPassword,
 		ImageID:                  nodePoolModels[0].Image,
 		NumOfNodes:               nodePoolModels[0].Count,
 	}
@@ -983,4 +979,30 @@ func (c *ACSKCluster) createAlibabaCredentialsFromSecret() (*credentials.AccessK
 		return nil, err
 	}
 	return verify.CreateAlibabaCredentials(clusterSecret.Values), nil
+}
+
+func createAlibabaConfig() *sdk.Config {
+	cfg := sdk.NewConfig()
+	cfg.AutoRetry = false
+	cfg.Debug = true
+	cfg.Timeout = time.Minute
+	return cfg
+}
+
+func createAlibabaCSClient(auth *credentials.AccessKeyCredential, regionID string, cfg *sdk.Config) (*cs.Client, error) {
+	if cfg == nil {
+		cfg = createAlibabaConfig()
+	}
+
+	cred := credentials.NewAccessKeyCredential(auth.AccessKeyId, auth.AccessKeySecret)
+	return cs.NewClientWithOptions(regionID, cfg, cred)
+}
+
+func createAlibabaECSClient(auth *credentials.AccessKeyCredential, regionID string, cfg *sdk.Config) (*ecs.Client, error) {
+	if cfg == nil {
+		cfg = createAlibabaConfig()
+	}
+
+	cred := credentials.NewAccessKeyCredential(auth.AccessKeyId, auth.AccessKeySecret)
+	return ecs.NewClientWithOptions(regionID, cfg, cred)
 }
